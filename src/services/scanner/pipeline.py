@@ -206,12 +206,34 @@ class CardScanner:
             self.easyocr_reader = easyocr.Reader(['en'], gpu=use_gpu)
         return self.easyocr_reader
 
+    def _resolve_model_path(self, model_name: str) -> str:
+        import sys
+        # 1. Check if frozen and model is in _MEIPASS
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            bundled_path = os.path.join(sys._MEIPASS, model_name)
+            if os.path.exists(bundled_path):
+                return bundled_path
+        # 2. Check if model exists in current working directory
+        if os.path.exists(model_name):
+            return os.path.abspath(model_name)
+        # 3. Check if model exists in project root directory (4 levels up from this file)
+        try:
+            proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            proj_path = os.path.join(proj_root, model_name)
+            if os.path.exists(proj_path):
+                return proj_path
+        except Exception:
+            pass
+        # 4. Fallback to model name
+        return model_name
+
     def get_yolo(self, model_name: str = 'yolov8l.pt'):
         # If model is not loaded or loaded model is different from requested
         if self.yolo_model is None or self.yolo_model_name != model_name:
             logger.info(f"Initializing YOLO model ({model_name})...")
             try:
-                self.yolo_model = YOLO(model_name)
+                resolved_path = self._resolve_model_path(model_name)
+                self.yolo_model = YOLO(resolved_path)
                 self.yolo_model_name = model_name
             except Exception as e:
                 logger.error(f"Failed to load YOLO model {model_name}: {e}. Falling back to yolov8l.pt")
@@ -226,7 +248,8 @@ class CardScanner:
         if self.yolo_cls_model is None or self.yolo_cls_model_name != model_name:
             logger.info(f"Initializing YOLO CLS model ({model_name})...")
             try:
-                self.yolo_cls_model = YOLO(model_name)
+                resolved_path = self._resolve_model_path(model_name)
+                self.yolo_cls_model = YOLO(resolved_path)
                 self.yolo_cls_model_name = model_name
             except Exception as e:
                 logger.error(f"Failed to load YOLO CLS model {model_name}: {e}.")

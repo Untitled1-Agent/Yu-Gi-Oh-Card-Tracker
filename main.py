@@ -59,8 +59,10 @@ def db_editor():
 # Serve images
 os.makedirs('data/images', exist_ok=True)
 os.makedirs('data/img', exist_ok=True)
+os.makedirs('data/sets', exist_ok=True)
 os.makedirs('data/collections/storage', exist_ok=True)
 os.makedirs('data/flags', exist_ok=True)
+os.makedirs('debug', exist_ok=True)
 app.add_static_files('/images', 'data/images')
 app.add_static_files('/data/img', 'data/img') # Serve data/img for Art Match if used
 app.add_static_files('/sets', 'data/sets')
@@ -74,5 +76,7 @@ def chrome_devtools_probe():
     return JSONResponse(content={})
 
 if __name__ in {"__main__", "__mp_main__"}:
+    import multiprocessing
+    multiprocessing.freeze_support()
     # Disable reload to prevent restart loops when writing to data/ directory (images, db)
     ui.run(title='OpenYuGi', favicon='🃏', reload=False)
