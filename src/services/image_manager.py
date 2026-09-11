@@ -133,13 +133,28 @@ class ImageManager:
         with open(path, 'wb') as f:
             f.write(data)
 
+    def _get_missing_images(self, url_map: Dict[int, str], high_res: bool) -> Dict[int, str]:
+        """Check the disk cache in a worker thread, not on the UI event loop."""
+        return {
+            card_id: url for card_id, url in url_map.items()
+            if not self.image_exists(card_id, high_res)
+        }
+
     async def download_batch(self, url_map: Dict[int, str], concurrency: int = 20, progress_callback: Optional[Callable[[float], None]] = None, high_res: bool = False):
         """
-        Downloads images for the given map of {card_id: url}.
-        Skips existing images.
+        Download missing images with at most ``concurrency`` worker tasks.
+
+        Progress counts completed attempts (including failed downloads), as before.
+        Cache checks run off the UI thread; callbacks still run on the event loop.
         """
-        # Filter out existing
-        to_download = {id: url for id, url in url_map.items() if not self.image_exists(id, high_res)}
+        if concurrency < 1:
+            raise ValueError("concurrency must be at least 1")
+
+        # Snapshot the caller's map before handing it to another thread.
+        to_download = (
+            await run.io_bound(self._get_missing_images, url_map.copy(), high_res)
+            if url_map else {}
+        )
         total = len(to_download)
 
         self.logger.info(f"Batch download requested for {len(url_map)} images. {total} need downloading.")
@@ -148,12 +163,14 @@ class ImageManager:
             if progress_callback: progress_callback(1.0)
             return
 
-        semaphore = asyncio.Semaphore(concurrency)
+        pending = iter(to_download.items())
         completed = 0
 
-        async def _task(card_id, url):
+        async def _worker():
             nonlocal completed
-            async with semaphore:
+            # Advancing the shared iterator does not await, so each image is
+            # claimed once. Only the fixed number of workers become Tasks.
+            for card_id, url in pending:
                 local_path = self.get_local_path(card_id, high_res)
                 await self._download_with_session(session, card_id, url, local_path)
                 completed += 1
@@ -161,10 +178,19 @@ class ImageManager:
                     progress_callback(completed / total)
 
         async with aiohttp.ClientSession() as session:
-            tasks = [_task(cid, url) for cid, url in to_download.items()]
-            await asyncio.gather(*tasks)
+            workers = [asyncio.create_task(_worker()) for _ in range(min(concurrency, total))]
+            try:
+                await asyncio.gather(*workers)
+            finally:
+                # gather does not cancel siblings when a worker/callback raises.
+                # Drain them before closing the shared HTTP session, also when
+                # the caller cancels the batch.
+                for worker in workers:
+                    if not worker.done():
+                        worker.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
 
-        self.logger.info(f"Batch download complete. Downloaded {total} images.")
+        self.logger.info(f"Batch download complete. Processed {completed} images.")
 
     async def download_images_batch(self, tasks: list):
         """Helper to run a batch of downloads. Deprecated but kept for compatibility."""
